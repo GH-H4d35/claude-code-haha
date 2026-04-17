@@ -64,6 +64,8 @@ describe('POST /api/haha-oauth/start', () => {
     const { req, url, segments } = buildReq('POST', '/api/haha-oauth/start', {})
     const res = await handleHahaOAuthApi(req, url, segments)
     expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string; message?: string }
+    expect(body.error).toBe('BAD_REQUEST')
   })
 })
 

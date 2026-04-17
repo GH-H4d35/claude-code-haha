@@ -10,6 +10,7 @@
 
 import { z } from 'zod'
 import { hahaOAuthService } from '../services/hahaOAuthService.js'
+import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 const StartRequestSchema = z.object({
   serverPort: z.number().int().positive(),
@@ -27,71 +28,72 @@ export async function handleHahaOAuthApi(
   url: URL,
   segments: string[],
 ): Promise<Response> {
-  const action = segments[2] // segments: ['api', 'haha-oauth', <action?>]
+  try {
+    const action = segments[2] // segments: ['api', 'haha-oauth', <action?>]
 
-  if (action === 'start' && req.method === 'POST') {
-    let body: unknown
-    try {
-      body = await req.json()
-    } catch {
-      return Response.json({ error: 'Invalid JSON body' }, { status: 400 })
+    if (action === 'start' && req.method === 'POST') {
+      let body: unknown
+      try {
+        body = await req.json()
+      } catch {
+        throw ApiError.badRequest('Invalid JSON body')
+      }
+      const parsed = StartRequestSchema.safeParse(body)
+      if (!parsed.success) {
+        throw ApiError.badRequest('serverPort (positive integer) required')
+      }
+      const session = hahaOAuthService.startSession({
+        serverPort: parsed.data.serverPort,
+      })
+      return Response.json({
+        authorizeUrl: session.authorizeUrl,
+        state: session.state,
+      })
     }
-    const parsed = StartRequestSchema.safeParse(body)
-    if (!parsed.success) {
-      return Response.json(
-        { error: 'serverPort (positive integer) required' },
-        { status: 400 },
-      )
+
+    if (action === 'callback' && req.method === 'GET') {
+      const code = url.searchParams.get('code')
+      const state = url.searchParams.get('state')
+      const error = url.searchParams.get('error')
+
+      if (error) {
+        return html(renderCallbackPage(false, `OAuth provider returned: ${error}`))
+      }
+      if (!code || !state) {
+        return html(renderCallbackPage(false, 'Missing code or state parameter'))
+      }
+
+      try {
+        await hahaOAuthService.completeSession(code, state)
+        return html(renderCallbackPage(true, null))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return html(renderCallbackPage(false, msg))
+      }
     }
-    const session = hahaOAuthService.startSession({
-      serverPort: parsed.data.serverPort,
-    })
-    return Response.json({
-      authorizeUrl: session.authorizeUrl,
-      state: session.state,
-    })
+
+    if ((action === undefined || action === 'status') && req.method === 'GET') {
+      const tokens = await hahaOAuthService.loadTokens()
+      if (!tokens) {
+        return Response.json({ loggedIn: false })
+      }
+      return Response.json({
+        loggedIn: true,
+        expiresAt: tokens.expiresAt,
+        scopes: tokens.scopes,
+        subscriptionType: tokens.subscriptionType,
+      })
+    }
+
+    if (action === undefined && req.method === 'DELETE') {
+      await hahaOAuthService.deleteTokens()
+      return Response.json({ ok: true })
+    }
+
+    return Response.json({ error: 'Not Found' }, { status: 404 })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  if (action === 'callback' && req.method === 'GET') {
-    const code = url.searchParams.get('code')
-    const state = url.searchParams.get('state')
-    const error = url.searchParams.get('error')
-
-    if (error) {
-      return html(renderCallbackPage(false, `OAuth provider returned: ${error}`))
-    }
-    if (!code || !state) {
-      return html(renderCallbackPage(false, 'Missing code or state parameter'))
-    }
-
-    try {
-      await hahaOAuthService.completeSession(code, state)
-      return html(renderCallbackPage(true, null))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return html(renderCallbackPage(false, msg))
-    }
-  }
-
-  if ((action === undefined || action === 'status') && req.method === 'GET') {
-    const tokens = await hahaOAuthService.loadTokens()
-    if (!tokens) {
-      return Response.json({ loggedIn: false })
-    }
-    return Response.json({
-      loggedIn: true,
-      expiresAt: tokens.expiresAt,
-      scopes: tokens.scopes,
-      subscriptionType: tokens.subscriptionType,
-    })
-  }
-
-  if (action === undefined && req.method === 'DELETE') {
-    await hahaOAuthService.deleteTokens()
-    return Response.json({ ok: true })
-  }
-
-  return Response.json({ error: 'Not Found' }, { status: 404 })
 }
 
 function renderCallbackPage(success: boolean, errorMsg: string | null): string {
